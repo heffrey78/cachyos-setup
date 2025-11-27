@@ -552,8 +552,43 @@ vr-games-demo:
     @echo "  - Superhot VR"
     @echo "  - Boneworks"
 
+# Configure git with user information
+dev-git:
+    @echo "=== Configuring Git ==="
+    @echo "Setting git user email to heffrey78@gmail.com..."
+    git config --global user.email "heffrey78@gmail.com"
+    @echo "Setting git user name..."
+    @if git config --global user.name > /dev/null 2>&1; then \
+        echo "✓ Git user name already set to: $$(git config --global user.name)"; \
+    else \
+        read -p "Enter your full name for git commits: " name; \
+        git config --global user.name "$$name"; \
+        echo "✓ Git user name set to: $$name"; \
+    fi
+    @echo ""
+    @echo "Setting default branch name to 'main'..."
+    git config --global init.defaultBranch main
+    @echo ""
+    @echo "Setting pull strategy to rebase..."
+    git config --global pull.rebase false
+    @echo ""
+    @if command -v gh > /dev/null; then \
+        echo "Configuring GitHub CLI as git credential helper..."; \
+        gh auth setup-git; \
+        echo "✓ GitHub credential helper configured"; \
+    else \
+        echo "⚠ GitHub CLI not installed, skipping credential setup"; \
+        echo "  Install with: just dev-gh, then run: gh auth login"; \
+    fi
+    @echo ""
+    @echo "✓ Git configuration complete"
+    @echo ""
+    @echo "Current git config:"
+    @git config --global --list | grep -E "^user\.(name|email)" | sed 's/^/  /'
+    @git config --global --list | grep -E "^init\.defaultBranch" | sed 's/^/  /'
+
 # Development tools
-dev-tools: dev-core dev-docker dev-languages dev-gh
+dev-tools: dev-git dev-core dev-docker dev-languages dev-gh
     @echo "✓ Development tools installed"
 
 # Install core development tools
