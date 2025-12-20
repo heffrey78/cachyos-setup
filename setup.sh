@@ -43,7 +43,7 @@ check_system() {
 # Install Intel GPU drivers
 install_intel_drivers() {
     print_header "Installing Intel GPU Drivers"
-    yay -S --needed --noconfirm intel-media-driver libva-intel-driver intel-gpu-tools
+    yay -S --needed --noconfirm intel-media-driver libva-intel-driver igt-gpu-tools
     print_success "Intel drivers installed"
 }
 
@@ -61,6 +61,8 @@ check_nvidia_drivers() {
 
 # Install all GPU drivers
 install_drivers() {
+    print_header "Syncing Package Database"
+    yay -Sy
     install_intel_drivers
     check_nvidia_drivers
     print_success "GPU drivers configured"
@@ -163,11 +165,78 @@ install_wine() {
     print_success "Wine installed"
 }
 
+# Install RetroArch and cores
+install_retroarch() {
+    print_header "Installing RetroArch & Cores"
+
+    # Install RetroArch if not already installed
+    yay -S --needed --noconfirm retroarch retroarch-assets-xmb retroarch-assets-ozone
+
+    # Create necessary directories
+    mkdir -p ~/.config/retroarch
+    mkdir -p ~/.config/retroarch/cores
+    mkdir -p ~/.local/share/retroarch
+
+    # Install common libretro cores
+    echo "Installing popular cores..."
+    yay -S --needed --noconfirm \
+        libretro-beetle-psx-hw \
+        libretro-bsnes \
+        libretro-snes9x \
+        libretro-genesis-plus-gx \
+        libretro-mgba \
+        libretro-nestopia \
+        libretro-mupen64plus-next \
+        libretro-ppsspp \
+        libretro-dolphin \
+        libretro-desmume \
+        libretro-gambatte \
+        libretro-flycast \
+        libretro-mame
+
+    # Configure RetroArch to use system cores
+    if [ ! -f ~/.config/retroarch/retroarch.cfg ]; then
+        echo "Creating RetroArch config..."
+        retroarch --verbose --config ~/.config/retroarch/retroarch.cfg --exit 2>/dev/null || true
+        sleep 1
+    fi
+
+    # Set the libretro directory to system location
+    if [ -f ~/.config/retroarch/retroarch.cfg ]; then
+        # Update or add libretro_directory setting
+        if grep -q "^libretro_directory" ~/.config/retroarch/retroarch.cfg; then
+            sed -i 's|^libretro_directory.*|libretro_directory = "/usr/lib/libretro"|' ~/.config/retroarch/retroarch.cfg
+        else
+            echo 'libretro_directory = "/usr/lib/libretro"' >> ~/.config/retroarch/retroarch.cfg
+        fi
+
+        # Update or add core_updater_buildbot_cores_url to enable online updater as backup
+        if grep -q "^core_updater_buildbot_cores_url" ~/.config/retroarch/retroarch.cfg; then
+            sed -i 's|^# core_updater_buildbot_cores_url.*|core_updater_buildbot_cores_url = "https://buildbot.libretro.com/nightly/linux/x86_64/latest/"|' ~/.config/retroarch/retroarch.cfg
+        fi
+    fi
+
+    print_success "RetroArch and cores installed"
+    echo ""
+    echo "Installed cores:"
+    ls /usr/lib/libretro/*.so 2>/dev/null | wc -l | sed 's/^/  /'
+    echo ""
+    echo "Additional cores available:"
+    echo "  - Search: yay -Ss libretro"
+    echo "  - Install example: yay -S libretro-picodrive"
+    echo ""
+    echo "Launch RetroArch and go to:"
+    echo "  Main Menu → Load Core → (cores should now appear)"
+}
+
 # Install all gaming components
 install_gaming() {
+    print_header "Syncing Package Database"
+    yay -Sy
     install_steam
     install_gaming_tools
     install_wine
+    install_retroarch
     print_success "Gaming setup complete"
 }
 
@@ -289,6 +358,8 @@ install_gh() {
 
 # Install all dev tools
 install_dev_tools() {
+    print_header "Syncing Package Database"
+    yay -Sy
     install_dev_core
     install_docker
     install_languages
@@ -394,6 +465,8 @@ check_hyprland_status() {
 
 # Install complete Hyprland setup
 install_hyprland_complete() {
+    print_header "Syncing Package Database"
+    yay -Sy
     install_hyprland
     install_hyprland_deps
     check_hyprland_status
@@ -453,6 +526,14 @@ verify() {
         print_success "GameMode installed"
     else
         print_error "GameMode missing"
+    fi
+
+    if command -v retroarch > /dev/null; then
+        print_success "RetroArch installed"
+        core_count=$(ls /usr/lib/libretro/*.so 2>/dev/null | wc -l)
+        echo "    Cores installed: $core_count"
+    else
+        print_warning "RetroArch missing (run: $0 retroarch)"
     fi
 
     echo ""
@@ -515,6 +596,8 @@ verify() {
 
 # Run all setup steps
 setup_all() {
+    print_header "Syncing Package Database"
+    yay -Sy
     check_system
     install_drivers
     update_firmware
@@ -548,6 +631,7 @@ Commands:
   suspend          Fix suspend/resume issues
   add-kernel-params Add kernel parameters for suspend
   gaming           Install gaming tools
+  retroarch        Install RetroArch and libretro cores
   dev              Install development tools
   gh               Install GitHub CLI
   nvm              Install nvm (Node Version Manager)
@@ -596,6 +680,9 @@ case "${1:-help}" in
         ;;
     gaming)
         install_gaming
+        ;;
+    retroarch)
+        install_retroarch
         ;;
     dev)
         install_dev_tools
