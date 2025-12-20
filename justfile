@@ -110,7 +110,7 @@ suspend-kernel-params-add:
     @echo "⚠ Reboot required!"
 
 # Install gaming tools and libraries
-gaming: gaming-steam gaming-tools gaming-wine
+gaming: gaming-steam gaming-tools gaming-wine gaming-retroarch
     @echo "✓ Gaming setup complete"
 
 # Install Steam
@@ -135,6 +135,48 @@ gaming-wine:
     @echo "=== Installing Wine ==="
     yay -S --needed --noconfirm wine-staging winetricks lib32-vkd3d lib32-giflib lib32-gnutls
     @echo "✓ Wine installed"
+
+# Install RetroArch and libretro cores
+gaming-retroarch:
+    @echo "=== Installing RetroArch & Cores ==="
+    yay -S --needed --noconfirm retroarch retroarch-assets-xmb retroarch-assets-ozone
+    @mkdir -p ~/.config/retroarch ~/.config/retroarch/cores ~/.local/share/retroarch
+    @echo "Installing popular cores..."
+    yay -S --needed --noconfirm \
+        libretro-beetle-psx-hw \
+        libretro-bsnes \
+        libretro-snes9x \
+        libretro-genesis-plus-gx \
+        libretro-mgba \
+        libretro-nestopia \
+        libretro-mupen64plus-next \
+        libretro-ppsspp \
+        libretro-dolphin \
+        libretro-desmume \
+        libretro-gambatte \
+        libretro-flycast \
+        libretro-mame
+    @if [ ! -f ~/.config/retroarch/retroarch.cfg ]; then \
+        retroarch --verbose --config ~/.config/retroarch/retroarch.cfg --exit 2>/dev/null || true; \
+        sleep 1; \
+    fi
+    @if [ -f ~/.config/retroarch/retroarch.cfg ]; then \
+        if grep -q "^libretro_directory" ~/.config/retroarch/retroarch.cfg; then \
+            sed -i 's|^libretro_directory.*|libretro_directory = "/usr/lib/libretro"|' ~/.config/retroarch/retroarch.cfg; \
+        else \
+            echo 'libretro_directory = "/usr/lib/libretro"' >> ~/.config/retroarch/retroarch.cfg; \
+        fi; \
+    fi
+    @echo "✓ RetroArch and cores installed"
+    @echo ""
+    @echo "Installed cores: $$(ls /usr/lib/libretro/*.so 2>/dev/null | wc -l)"
+    @echo ""
+    @echo "Additional cores available:"
+    @echo "  - Search: yay -Ss libretro"
+    @echo "  - Install: yay -S libretro-<core-name>"
+    @echo ""
+    @echo "Launch RetroArch and go to:"
+    @echo "  Main Menu → Load Core → (cores should now appear)"
 
 # Configure esync for better gaming performance
 gaming-esync:
@@ -1281,6 +1323,12 @@ verify:
     @if command -v steam > /dev/null; then echo "  ✓ Steam installed"; else echo "  ✗ Steam missing"; fi
     @if command -v mangohud > /dev/null; then echo "  ✓ MangoHud installed"; else echo "  ✗ MangoHud missing"; fi
     @if command -v gamemoded > /dev/null; then echo "  ✓ GameMode installed"; else echo "  ✗ GameMode missing"; fi
+    @if command -v retroarch > /dev/null; then \
+        echo "  ✓ RetroArch installed"; \
+        echo "    Cores: $$(ls /usr/lib/libretro/*.so 2>/dev/null | wc -l)"; \
+    else \
+        echo "  ✗ RetroArch missing (run: just gaming-retroarch)"; \
+    fi
     @echo ""
     @echo "VR (Quest 3 Streaming):"
     @if command -v alvr_dashboard > /dev/null; then echo "  ✓ ALVR installed"; else echo "  ✗ ALVR missing (run: just vr)"; fi
