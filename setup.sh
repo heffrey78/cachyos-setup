@@ -268,6 +268,12 @@ install_docker() {
 install_languages() {
     print_header "Installing Languages"
     yay -S --needed --noconfirm python python-pip rust go
+
+    # Python Development Tools
+    if ! command -v uv &> /dev/null; then
+        echo "Installing uv..."
+        curl -LsSf https://astral.sh/uv/install.sh | sh
+    fi
     print_success "Languages installed"
 }
 
@@ -354,6 +360,20 @@ install_gh() {
     echo ""
     echo "To authenticate with GitHub, run:"
     echo "  gh auth login"
+}
+
+# Install Discord
+install_discord() {
+    print_header "Installing Discord"
+    if pacman -Qs "^discord " > /dev/null 2>&1; then
+        print_success "Discord already installed"
+    else
+        echo "Installing Discord from official repos..."
+        yay -S --needed --noconfirm discord
+        print_success "Discord installed"
+    fi
+    echo ""
+    echo "Discord installed successfully"
 }
 
 # Install all dev tools
@@ -482,6 +502,127 @@ install_hyprland_complete() {
     echo "  - Config examples: https://github.com/hyprland-community/awesome-hyprland"
 }
 
+# Install Quest 3 packages
+install_quest_packages() {
+    print_header "Installing Quest 3 Tools"
+    if pacman -Qs android-tools > /dev/null 2>&1; then
+        print_success "android-tools already installed"
+    else
+        echo "Installing android-tools and android-udev..."
+        yay -S --needed --noconfirm android-tools android-udev
+        print_success "Packages installed"
+    fi
+    echo ""
+    echo "ADB version:"
+    adb version | head -1
+    echo ""
+    print_success "Quest 3 tools installed"
+}
+
+# Configure Quest 3 udev rules
+configure_quest_udev() {
+    print_header "Configuring Quest 3 Permissions"
+    if groups | grep -q adbusers; then
+        print_success "User already in adbusers group"
+    else
+        echo "Adding user to adbusers group..."
+        sudo usermod -aG adbusers $USER
+        print_success "User added to adbusers group"
+        print_warning "Log out and back in for group to take effect"
+    fi
+    echo ""
+    if [ -f /etc/udev/rules.d/51-quest.rules ]; then
+        print_success "Quest udev rules already exist"
+    else
+        echo "Creating Quest-specific udev rules..."
+        echo 'SUBSYSTEM=="usb", ATTR{idVendor}=="2833", ATTR{idProduct}=="0186", MODE="0666", GROUP="adbusers", SYMLINK+="quest%n"' | sudo tee /etc/udev/rules.d/51-quest.rules > /dev/null
+        sudo udevadm control --reload-rules
+        sudo udevadm trigger
+        print_success "Udev rules configured"
+    fi
+}
+
+# Install Quest 3 setup
+install_quest_setup() {
+    install_quest_packages
+    configure_quest_udev
+    print_success "Quest 3 setup complete"
+    echo ""
+    echo "Next steps:"
+    echo "  1. Enable Developer Mode on Quest 3:"
+    echo "     - Visit developer.oculus.com and create developer account"
+    echo "     - Open Meta Quest app on smartphone"
+    echo "     - Go to Menu → Devices → [Your Quest 3] → Developer Mode → ON"
+    echo "     - Restart Quest 3"
+    echo "  2. Connect Quest 3 via USB-C cable"
+    echo "  3. Put on headset and accept 'Allow USB debugging' prompt"
+    echo "  4. Check connection: $0 quest-status"
+}
+
+# Check Quest 3 connection
+check_quest_status() {
+    print_header "Quest 3 Connection Status"
+    echo ""
+    echo "USB Devices (Quest should show as ID 2833:0186):"
+    lsusb | grep -i "2833:0186\|Oculus" || echo "  ⚠ No Quest detected via USB"
+    echo ""
+    echo "ADB Devices:"
+    adb devices
+    echo ""
+    if adb devices | grep -q "device$"; then
+        print_success "Quest 3 connected and authorized"
+        echo ""
+        echo "Device info:"
+        adb shell getprop ro.product.model | sed 's/^/  Model: /'
+        adb shell getprop ro.build.version.release | sed 's/^/  Android: /'
+    elif adb devices | grep -q "unauthorized"; then
+        print_warning "Quest 3 connected but not authorized"
+        echo "  Put on headset and accept 'Allow USB debugging' dialog"
+    else
+        print_error "No Quest 3 detected"
+        echo ""
+        echo "Troubleshooting:"
+        echo "  - Connect Quest via USB-C cable"
+        echo "  - Ensure Developer Mode is enabled"
+        echo "  - Try: adb kill-server && adb start-server"
+        echo "  - Check permissions: groups | grep adbusers"
+    fi
+}
+
+# Transfer Synth Riders songs
+transfer_synth_songs() {
+    print_header "Transferring Synth Riders Songs"
+    if ! adb devices | grep -q "device$"; then
+        print_error "Quest 3 not connected"
+        echo "Run: $0 quest-status"
+        exit 1
+    fi
+
+    if [ -z "$1" ]; then
+        print_error "No files specified"
+        echo "Usage: $0 quest-synth-push <file1.synth> [file2.synth...]"
+        exit 1
+    fi
+
+    echo "Ensuring folder exists..."
+    adb shell mkdir -p /sdcard/SynthRidersUC/CustomSongs/ 2>/dev/null || true
+    echo ""
+
+    count=0
+    for file in "$@"; do
+        if [ -f "$file" ]; then
+            echo "Pushing: $(basename "$file")"
+            adb push "$file" /sdcard/SynthRidersUC/CustomSongs/
+            count=$((count + 1))
+        fi
+    done
+
+    echo ""
+    print_success "Transferred $count song(s) to Quest 3"
+    echo ""
+    echo "Launch Synth Riders on Quest to see new songs"
+}
+
 # Verify installation
 verify() {
     print_header "Verification"
@@ -534,6 +675,34 @@ verify() {
         echo "    Cores installed: $core_count"
     else
         print_warning "RetroArch missing (run: $0 retroarch)"
+    fi
+
+    echo ""
+    echo "Quest 3 Setup (Sideloading):"
+    if command -v adb > /dev/null; then
+        print_success "ADB installed"
+    else
+        print_error "ADB missing (run: $0 quest-setup)"
+    fi
+
+    if groups | grep -q adbusers; then
+        print_success "User in adbusers group"
+    else
+        print_error "User not in adbusers group (run: $0 quest-setup)"
+    fi
+
+    if [ -f /etc/udev/rules.d/51-quest.rules ]; then
+        print_success "Quest udev rules configured"
+    else
+        print_error "Quest udev rules missing (run: $0 quest-setup)"
+    fi
+
+    echo ""
+    echo "Communication:"
+    if command -v discord > /dev/null; then
+        print_success "Discord installed"
+    else
+        print_warning "Discord missing (run: $0 discord)"
     fi
 
     echo ""
@@ -603,6 +772,7 @@ setup_all() {
     update_firmware
     fix_suspend
     install_gaming
+    install_discord
     install_dev_tools
     verify
 
@@ -632,6 +802,7 @@ Commands:
   add-kernel-params Add kernel parameters for suspend
   gaming           Install gaming tools
   retroarch        Install RetroArch and libretro cores
+  discord          Install Discord
   dev              Install development tools
   gh               Install GitHub CLI
   nvm              Install nvm (Node Version Manager)
@@ -640,16 +811,22 @@ Commands:
   antigravity      Install Google Antigravity (AI-powered IDE)
   hyprland         Install Hyprland (tiling Wayland compositor)
   hyprland-status  Check Hyprland installation status
+  quest-setup      Install ADB and configure Quest 3 for sideloading
+  quest-status     Check Quest 3 connection status
+  quest-synth-push Transfer Synth Riders songs to Quest 3
   verify           Verify installation
   help             Show this help message
 
 Examples:
-  $0 all           # Run full setup
-  $0 drivers       # Install only drivers
-  $0 gaming        # Install only gaming tools
-  $0 node          # Install nvm and Node.js
-  $0 claude        # Install Claude CLI
-  $0 hyprland      # Install Hyprland window manager
+  $0 all                      # Run full setup
+  $0 drivers                  # Install only drivers
+  $0 gaming                   # Install only gaming tools
+  $0 discord                  # Install Discord
+  $0 node                     # Install nvm and Node.js
+  $0 claude                   # Install Claude CLI
+  $0 hyprland                 # Install Hyprland window manager
+  $0 quest-setup              # Set up Quest 3 sideloading
+  $0 quest-synth-push *.synth # Transfer Synth Riders songs
 
 For more information, see README.md
 EOF
@@ -684,6 +861,9 @@ case "${1:-help}" in
     retroarch)
         install_retroarch
         ;;
+    discord)
+        install_discord
+        ;;
     dev)
         install_dev_tools
         ;;
@@ -707,6 +887,16 @@ case "${1:-help}" in
         ;;
     hyprland-status)
         check_hyprland_status
+        ;;
+    quest-setup)
+        install_quest_setup
+        ;;
+    quest-status)
+        check_quest_status
+        ;;
+    quest-synth-push)
+        shift
+        transfer_synth_songs "$@"
         ;;
     verify)
         verify

@@ -6,7 +6,7 @@ default:
     @just --list
 
 # Run complete setup (all components)
-setup-all: check-system drivers firmware suspend-fix gaming vr scanning printing dev-tools dev-node dev-claude verify
+setup-all: check-system drivers firmware suspend-fix gaming vr quest-setup scanning printing discord dev-tools dev-node dev-claude verify
     @echo "================================"
     @echo "✓ Complete setup finished!"
     @echo "================================"
@@ -18,6 +18,7 @@ setup-all: check-system drivers firmware suspend-fix gaming vr scanning printing
     @echo "  4. Restart your shell to load nvm"
     @echo "  5. Set up Quest 3: Install ALVR from Meta AppLab"
     @echo "  6. Launch VR: just vr-launch"
+    @echo "  7. Transfer Synth Riders songs: just quest-synth-push ~/Downloads/*.synth"
 
 # Check system information
 check-system:
@@ -594,6 +595,253 @@ vr-games-demo:
     @echo "  - Superhot VR"
     @echo "  - Boneworks"
 
+# Quest 3 setup for sideloading and custom content
+quest-setup: quest-packages quest-udev
+    @echo "✓ Quest 3 setup complete"
+    @echo ""
+    @echo "Next steps:"
+    @echo "  1. Enable Developer Mode on Quest 3:"
+    @echo "     - Visit developer.oculus.com and create developer account"
+    @echo "     - Open Meta Quest app on smartphone"
+    @echo "     - Go to Menu → Devices → [Your Quest 3] → Developer Mode → ON"
+    @echo "     - Restart Quest 3"
+    @echo "  2. Connect Quest 3 via USB-C cable"
+    @echo "  3. Put on headset and accept 'Allow USB debugging' prompt"
+    @echo "  4. Check connection: just quest-status"
+    @echo "  5. Transfer Synth Riders songs: just quest-synth-push ~/Downloads/*.synth"
+
+# Install ADB and Quest tools
+quest-packages:
+    @echo "=== Installing Quest 3 Tools ==="
+    @if pacman -Qs android-tools > /dev/null 2>&1; then \
+        echo "✓ android-tools already installed"; \
+    else \
+        echo "Installing android-tools and android-udev..."; \
+        yay -S --needed --noconfirm android-tools android-udev; \
+        echo "✓ Packages installed"; \
+    fi
+    @echo ""
+    @echo "ADB version:"
+    @adb version | head -1
+    @echo ""
+    @echo "✓ Quest 3 tools installed"
+
+# Configure udev rules for Quest 3
+quest-udev:
+    @echo "=== Configuring Quest 3 Permissions ==="
+    @if groups | grep -q adbusers; then \
+        echo "✓ User already in adbusers group"; \
+    else \
+        echo "Adding user to adbusers group..."; \
+        sudo usermod -aG adbusers $$USER; \
+        echo "✓ User added to adbusers group"; \
+        echo "⚠ Log out and back in for group to take effect"; \
+    fi
+    @echo ""
+    @if [ -f /etc/udev/rules.d/51-quest.rules ]; then \
+        echo "✓ Quest udev rules already exist"; \
+    else \
+        echo "Creating Quest-specific udev rules..."; \
+        echo 'SUBSYSTEM=="usb", ATTR{idVendor}=="2833", ATTR{idProduct}=="0186", MODE="0666", GROUP="adbusers", SYMLINK+="quest%n"' | sudo tee /etc/udev/rules.d/51-quest.rules > /dev/null; \
+        sudo udevadm control --reload-rules; \
+        sudo udevadm trigger; \
+        echo "✓ Udev rules configured"; \
+    fi
+
+# Check Quest 3 connection status
+quest-status:
+    @echo "=== Quest 3 Connection Status ==="
+    @echo ""
+    @echo "USB Devices (Quest should show as ID 2833:0186):"
+    @lsusb | grep -i "2833:0186\|Oculus" || echo "  ⚠ No Quest detected via USB"
+    @echo ""
+    @echo "ADB Devices:"
+    @adb devices
+    @echo ""
+    @if adb devices | grep -q "device$$"; then \
+        echo "✓ Quest 3 connected and authorized"; \
+        echo ""; \
+        echo "Device info:"; \
+        adb shell getprop ro.product.model | sed 's/^/  Model: /'; \
+        adb shell getprop ro.build.version.release | sed 's/^/  Android: /'; \
+    elif adb devices | grep -q "unauthorized"; then \
+        echo "⚠ Quest 3 connected but not authorized"; \
+        echo "  Put on headset and accept 'Allow USB debugging' dialog"; \
+    else \
+        echo "✗ No Quest 3 detected"; \
+        echo ""; \
+        echo "Troubleshooting:"; \
+        echo "  - Connect Quest via USB-C cable"; \
+        echo "  - Ensure Developer Mode is enabled"; \
+        echo "  - Try: adb kill-server && adb start-server"; \
+        echo "  - Check permissions: groups | grep adbusers"; \
+    fi
+
+# Create Synth Riders folder structure on Quest
+quest-synth-init:
+    @echo "=== Initializing Synth Riders Folders ==="
+    @if ! adb devices | grep -q "device$$"; then \
+        echo "✗ Quest 3 not connected"; \
+        echo "Run: just quest-status"; \
+        exit 1; \
+    fi
+    @echo "Creating /sdcard/SynthRidersUC/CustomSongs/..."
+    @adb shell mkdir -p /sdcard/SynthRidersUC/CustomSongs/
+    @adb shell mkdir -p /sdcard/SynthRidersUC/Playlist/
+    @adb shell mkdir -p /sdcard/SynthRidersUC/CustomStages/
+    @adb shell mkdir -p /sdcard/SynthRidersUC/CustomAvatars/
+    @echo "✓ Folder structure created"
+
+# Transfer Synth Riders songs to Quest (usage: just quest-synth-push ~/Downloads/*.synth)
+quest-synth-push *files:
+    @echo "=== Transferring Synth Riders Songs ==="
+    @if ! adb devices | grep -q "device$$"; then \
+        echo "✗ Quest 3 not connected"; \
+        echo "Run: just quest-status"; \
+        exit 1; \
+    fi
+    @echo "Ensuring folder exists..."
+    @adb shell mkdir -p /sdcard/SynthRidersUC/CustomSongs/ 2>/dev/null || true
+    @echo ""
+    @count=0; \
+    for file in {{files}}; do \
+        if [ -f "$$file" ]; then \
+            echo "Pushing: $$(basename $$file)"; \
+            adb push "$$file" /sdcard/SynthRidersUC/CustomSongs/; \
+            count=$$((count + 1)); \
+        fi; \
+    done; \
+    echo ""; \
+    echo "✓ Transferred $$count song(s) to Quest 3"; \
+    echo ""; \
+    echo "Launch Synth Riders on Quest to see new songs"
+
+# Transfer Synth Riders playlists to Quest
+quest-synth-playlist *files:
+    @echo "=== Transferring Synth Riders Playlists ==="
+    @if ! adb devices | grep -q "device$$"; then \
+        echo "✗ Quest 3 not connected"; \
+        echo "Run: just quest-status"; \
+        exit 1; \
+    fi
+    @echo "Ensuring folder exists..."
+    @adb shell mkdir -p /sdcard/SynthRidersUC/Playlist/ 2>/dev/null || true
+    @echo ""
+    @count=0; \
+    for file in {{files}}; do \
+        if [ -f "$$file" ]; then \
+            echo "Pushing: $$(basename $$file)"; \
+            adb push "$$file" /sdcard/SynthRidersUC/Playlist/; \
+            count=$$((count + 1)); \
+        fi; \
+    done; \
+    echo ""; \
+    echo "✓ Transferred $$count playlist(s) to Quest 3"
+
+# List Synth Riders songs on Quest
+quest-synth-list:
+    @echo "=== Synth Riders Songs on Quest ==="
+    @if ! adb devices | grep -q "device$$"; then \
+        echo "✗ Quest 3 not connected"; \
+        exit 1; \
+    fi
+    @echo ""
+    @song_count=$$(adb shell ls /sdcard/SynthRidersUC/CustomSongs/ 2>/dev/null | wc -l); \
+    echo "Total songs: $$song_count"; \
+    echo ""; \
+    if [ "$$song_count" -gt 0 ]; then \
+        echo "Recent songs (last 20):"; \
+        adb shell ls -t /sdcard/SynthRidersUC/CustomSongs/ | head -20; \
+    else \
+        echo "No songs found. Transfer with: just quest-synth-push ~/Downloads/*.synth"; \
+    fi
+
+# Backup Synth Riders content from Quest
+quest-synth-backup:
+    @echo "=== Backing Up Synth Riders Content ==="
+    @if ! adb devices | grep -q "device$$"; then \
+        echo "✗ Quest 3 not connected"; \
+        exit 1; \
+    fi
+    @backup_dir=$$HOME/synth-riders-backup-$$(date +%Y%m%d_%H%M%S); \
+    echo "Creating backup directory: $$backup_dir"; \
+    mkdir -p "$$backup_dir"; \
+    echo ""; \
+    echo "Pulling SynthRidersUC folder..."; \
+    adb pull /sdcard/SynthRidersUC/ "$$backup_dir/"; \
+    echo ""; \
+    echo "✓ Backup complete: $$backup_dir"
+
+# Clear Synth Riders song cache on Quest
+quest-synth-clear-cache:
+    @echo "=== Clearing Synth Riders Cache ==="
+    @if ! adb devices | grep -q "device$$"; then \
+        echo "✗ Quest 3 not connected"; \
+        exit 1; \
+    fi
+    @read -p "This will delete the song database cache. Continue? [y/N] " confirm && [ "$$confirm" = "y" ] || exit 1
+    @echo "Deleting SynthDB..."
+    @adb shell rm /sdcard/SynthRidersUC/SynthDB 2>/dev/null || echo "Cache already clear"
+    @echo "✓ Cache cleared. Relaunch Synth Riders to rebuild database"
+
+# Install SideQuest (GUI for Quest sideloading)
+quest-sidequest:
+    @echo "=== Installing SideQuest ==="
+    @if command -v sidequest > /dev/null 2>&1; then \
+        echo "✓ SideQuest already installed"; \
+    else \
+        echo "Installing SideQuest from AUR..."; \
+        yay -S --needed --noconfirm sidequest-bin; \
+        echo "✓ SideQuest installed"; \
+    fi
+    @echo ""
+    @echo "Launch with: sidequest"
+    @echo "Or find 'SideQuest' in your application menu"
+
+# Grant storage permissions to Quest apps (needed for Android 12+)
+quest-grant-storage appid:
+    @echo "=== Granting Storage Permissions ==="
+    @if ! adb devices | grep -q "device$$"; then \
+        echo "✗ Quest 3 not connected"; \
+        exit 1; \
+    fi
+    @echo "Granting MANAGE_EXTERNAL_STORAGE to {{appid}}..."
+    @adb shell appops set --uid {{appid}} MANAGE_EXTERNAL_STORAGE allow
+    @echo "✓ Storage permissions granted"
+
+# Common Quest troubleshooting steps
+quest-troubleshoot:
+    @echo "=== Quest 3 Troubleshooting ==="
+    @echo ""
+    @echo "Restarting ADB server..."
+    @adb kill-server
+    @sleep 1
+    @adb start-server
+    @echo ""
+    @echo "Checking connection..."
+    @adb devices
+    @echo ""
+    @echo "USB device info:"
+    @lsusb | grep -i "2833:0186\|Oculus" || echo "No Quest detected"
+    @echo ""
+    @echo "Udev rules:"
+    @if [ -f /etc/udev/rules.d/51-quest.rules ]; then \
+        echo "✓ Quest rules exist"; \
+        cat /etc/udev/rules.d/51-quest.rules; \
+    else \
+        echo "✗ Quest rules missing (run: just quest-udev)"; \
+    fi
+    @echo ""
+    @echo "User groups:"
+    @groups | grep -o adbusers || echo "⚠ Not in adbusers group (run: just quest-udev and re-login)"
+    @echo ""
+    @echo "If still not working:"
+    @echo "  1. Try a different USB cable (must be data cable, not charge-only)"
+    @echo "  2. Try a different USB port (prefer USB 3.0 on motherboard)"
+    @echo "  3. Put on headset and revoke authorizations:"
+    @echo "     Settings → System → Developer → Revoke USB debugging authorizations"
+    @echo "  4. Reconnect cable and accept new authorization prompt"
+
 # Configure git with user information
 dev-git:
     @echo "=== Configuring Git ==="
@@ -716,6 +964,21 @@ dev-vscode-extensions:
     @echo "  - Remote SSH: code --install-extension ms-vscode-remote.remote-ssh"
     @echo "  - Live Share: code --install-extension ms-vsliveshare.vsliveshare"
 
+# Install Google Chrome
+dev-chrome:
+    @echo "=== Installing Google Chrome ==="
+    @if command -v google-chrome-stable > /dev/null; then \
+        echo "✓ Google Chrome already installed"; \
+        google-chrome-stable --version; \
+    else \
+        echo "Installing Google Chrome from AUR..."; \
+        yay -S --needed --noconfirm google-chrome; \
+        echo "✓ Google Chrome installed"; \
+    fi
+    @echo ""
+    @echo "Launch with: google-chrome-stable"
+    @echo "Or find 'Google Chrome' in your application menu"
+
 # Install modern CLI tools
 dev-cli-tools:
     @echo "=== Installing Modern CLI Tools ==="
@@ -779,6 +1042,223 @@ dev-claude: dev-node
     @echo ""
     @echo "Run 'claude' to get started"
     @echo "Documentation: https://docs.claude.com/claude-code"
+
+# Install .NET SDK and development tools
+dev-dotnet: dev-dotnet-sdk dev-dotnet-tools dev-dotnet-verify
+    @echo "✓ .NET development setup complete"
+    @echo ""
+    @echo "Quick start:"
+    @echo "  Create new console app: dotnet new console -n MyApp"
+    @echo "  Create new web API: dotnet new webapi -n MyApi"
+    @echo "  Run project: dotnet run"
+    @echo "  Build: dotnet build"
+    @echo "  Test: dotnet test"
+    @echo ""
+    @echo "Documentation: https://learn.microsoft.com/en-us/dotnet/"
+
+# Install .NET SDK
+dev-dotnet-sdk:
+    @echo "=== Installing .NET SDK ==="
+    @if command -v dotnet > /dev/null; then \
+        echo "✓ .NET SDK already installed"; \
+        dotnet --version | sed 's/^/  Current version: /'; \
+        echo "  Checking for updates..."; \
+        yay -S --needed --noconfirm dotnet-sdk aspnet-runtime; \
+    else \
+        echo "Installing .NET SDK and ASP.NET runtime..."; \
+        yay -S --needed --noconfirm dotnet-sdk aspnet-runtime; \
+        echo "✓ .NET SDK installed"; \
+    fi
+    @echo ""
+    @echo "Installed .NET SDKs:"
+    @dotnet --list-sdks | sed 's/^/  /'
+    @echo ""
+    @echo "Installed runtimes:"
+    @dotnet --list-runtimes | sed 's/^/  /'
+
+# Install .NET development tools
+dev-dotnet-tools:
+    @echo "=== Installing .NET Development Tools ==="
+    @echo ""
+    @echo "Installing global tools..."
+    @echo "  - dotnet-ef (Entity Framework Core tools)"
+    @dotnet tool install --global dotnet-ef --version 9.* > /dev/null 2>&1 || dotnet tool update --global dotnet-ef
+    @echo "  - dotnet-outdated (check outdated packages)"
+    @dotnet tool install --global dotnet-outdated-tool > /dev/null 2>&1 || dotnet tool update --global dotnet-outdated-tool
+    @echo "  - dotnet-format (code formatter)"
+    @dotnet tool install --global dotnet-format > /dev/null 2>&1 || dotnet tool update --global dotnet-format
+    @echo "  - dotnet-reportgenerator-globaltool (test coverage reports)"
+    @dotnet tool install --global dotnet-reportgenerator-globaltool > /dev/null 2>&1 || dotnet tool update --global dotnet-reportgenerator-globaltool
+    @echo ""
+    @echo "✓ Global tools installed"
+    @echo ""
+    @echo "Installed tools:"
+    @dotnet tool list -g | grep -v "^Package Id" | grep -v "^-" | sed 's/^/  /'
+
+# Install .NET templates
+dev-dotnet-templates:
+    @echo "=== Installing Additional .NET Templates ==="
+    @echo "Installing common templates..."
+    @dotnet new install Microsoft.AspNetCore.SpaTemplates > /dev/null 2>&1 || true
+    @echo "✓ Templates installed"
+    @echo ""
+    @echo "View all templates: dotnet new list"
+
+# Verify .NET installation
+dev-dotnet-verify:
+    @echo "=== Verifying .NET Installation ==="
+    @echo ""
+    @echo "Version:"
+    @dotnet --version | sed 's/^/  SDK: /'
+    @echo ""
+    @echo "Info:"
+    @dotnet --info | head -20
+    @echo ""
+    @echo "Available project templates (common):"
+    @dotnet new list | grep -E "console|webapi|mvc|blazor|classlib|xunit|nunit" | sed 's/^/  /'
+    @echo ""
+    @echo "✓ Verification complete"
+
+# Create a new .NET project with prompts
+dev-dotnet-new:
+    @echo "=== Create New .NET Project ==="
+    @echo ""
+    @echo "Common project types:"
+    @echo "  1. console     - Console application"
+    @echo "  2. webapi      - ASP.NET Core Web API"
+    @echo "  3. mvc         - ASP.NET Core MVC web app"
+    @echo "  4. blazorserver - Blazor Server app"
+    @echo "  5. blazorwasm   - Blazor WebAssembly app"
+    @echo "  6. classlib    - Class library"
+    @echo "  7. xunit       - xUnit test project"
+    @echo "  8. nunit       - NUnit test project"
+    @echo ""
+    @read -p "Enter template name (e.g., console, webapi): " template; \
+    read -p "Enter project name: " name; \
+    if [ -n "$$name" ] && [ -n "$$template" ]; then \
+        echo ""; \
+        echo "Creating $$template project: $$name"; \
+        dotnet new $$template -n $$name; \
+        echo ""; \
+        echo "✓ Project created in ./$$name"; \
+        echo ""; \
+        echo "Next steps:"; \
+        echo "  cd $$name"; \
+        echo "  dotnet run"; \
+    else \
+        echo "Project creation cancelled"; \
+    fi
+
+# Update .NET SDK
+dev-dotnet-update:
+    @echo "=== Updating .NET SDK ==="
+    yay -Syu --needed dotnet-sdk aspnet-runtime
+    @echo ""
+    @echo "Updating global tools..."
+    @dotnet tool update --global dotnet-ef
+    @dotnet tool update --global dotnet-outdated-tool
+    @dotnet tool update --global dotnet-format
+    @dotnet tool update --global dotnet-reportgenerator-globaltool
+    @echo "✓ .NET SDK and tools updated"
+
+# Install VS Code extensions for .NET
+dev-dotnet-vscode:
+    @echo "=== Installing VS Code Extensions for .NET ==="
+    @if ! command -v code > /dev/null; then \
+        echo "✗ VS Code not installed"; \
+        echo "Install with: just dev-vscode"; \
+        exit 1; \
+    fi
+    @echo ""
+    @echo "Installing .NET extensions..."
+    code --install-extension ms-dotnettools.csharp
+    code --install-extension ms-dotnettools.csdevkit
+    code --install-extension ms-dotnettools.vscode-dotnet-runtime
+    code --install-extension jchannon.csharpextensions
+    code --install-extension kreativ-software.csharpextensions
+    @echo ""
+    @echo "Installing additional helpful extensions..."
+    code --install-extension formulahendry.dotnet-test-explorer
+    code --install-extension patcx.vscode-nuget-gallery
+    @echo ""
+    @echo "✓ VS Code extensions installed"
+    @echo ""
+    @echo "Recommended settings for .NET development:"
+    @echo "  - OmniSharp: Enable all analyzers"
+    @echo "  - Format on save: Enabled"
+    @echo "  - IntelliSense: Enabled"
+
+# Install JetBrains Rider (premium .NET IDE)
+dev-dotnet-rider:
+    @echo "=== Installing JetBrains Rider ==="
+    @if command -v rider > /dev/null 2>&1; then \
+        echo "✓ Rider already installed"; \
+        rider --version 2>/dev/null || true; \
+    else \
+        echo "Installing Rider from AUR..."; \
+        yay -S --needed --noconfirm rider; \
+        echo "✓ Rider installed"; \
+    fi
+    @echo ""
+    @echo "Launch with: rider"
+    @echo "Or find 'Rider' in your application menu"
+    @echo ""
+    @echo "Note: Rider requires a license (free 30-day trial available)"
+    @echo "      https://www.jetbrains.com/rider/buy/"
+
+# Check .NET development environment status
+dev-dotnet-status:
+    @echo "=== .NET Development Status ==="
+    @echo ""
+    @echo "SDK:"
+    @if command -v dotnet > /dev/null; then \
+        echo "  ✓ .NET SDK installed"; \
+        echo "    Version: $$(dotnet --version)"; \
+        echo ""; \
+        echo "  Installed SDKs:"; \
+        dotnet --list-sdks | sed 's/^/    /'; \
+        echo ""; \
+        echo "  Installed runtimes:"; \
+        dotnet --list-runtimes | sed 's/^/    /'; \
+    else \
+        echo "  ✗ .NET SDK not installed (run: just dev-dotnet)"; \
+    fi
+    @echo ""
+    @echo "Global Tools:"
+    @if command -v dotnet > /dev/null; then \
+        if dotnet tool list -g | grep -q dotnet-ef; then \
+            echo "  ✓ dotnet-ef"; \
+        else \
+            echo "  ✗ dotnet-ef (run: just dev-dotnet-tools)"; \
+        fi; \
+        if dotnet tool list -g | grep -q dotnet-outdated; then \
+            echo "  ✓ dotnet-outdated"; \
+        else \
+            echo "  ✗ dotnet-outdated (run: just dev-dotnet-tools)"; \
+        fi; \
+        if dotnet tool list -g | grep -q dotnet-format; then \
+            echo "  ✓ dotnet-format"; \
+        else \
+            echo "  ✗ dotnet-format (run: just dev-dotnet-tools)"; \
+        fi; \
+    fi
+    @echo ""
+    @echo "IDEs:"
+    @if command -v code > /dev/null; then \
+        if code --list-extensions | grep -q ms-dotnettools.csharp; then \
+            echo "  ✓ VS Code with C# extension"; \
+        else \
+            echo "  ⚠ VS Code installed but missing C# extension"; \
+            echo "    Run: just dev-dotnet-vscode"; \
+        fi; \
+    else \
+        echo "  ✗ VS Code not installed (run: just dev-vscode)"; \
+    fi
+    @if command -v rider > /dev/null 2>&1; then \
+        echo "  ✓ JetBrains Rider installed"; \
+    else \
+        echo "  ✗ Rider not installed (optional, run: just dev-dotnet-rider)"; \
+    fi
 
 # Install Google Antigravity (AI-powered IDE)
 dev-antigravity:
@@ -974,6 +1454,45 @@ nordvpn-login:
 nordvpn-countries:
     @echo "=== Available Countries ==="
     nordvpn countries
+
+# Install Discord
+discord: discord-install
+    @echo "✓ Discord setup complete"
+    @echo ""
+    @echo "Launch with: just discord-launch"
+    @echo "Or find 'Discord' in your application menu"
+
+# Install Discord package
+discord-install:
+    @echo "=== Installing Discord ==="
+    @if pacman -Qs "^discord " > /dev/null 2>&1; then \
+        echo "✓ Discord already installed"; \
+    else \
+        echo "Installing Discord from official repos..."; \
+        yay -S --needed --noconfirm discord; \
+        echo "✓ Discord installed"; \
+    fi
+
+# Launch Discord
+discord-launch:
+    @echo "=== Launching Discord ==="
+    @if command -v discord > /dev/null; then \
+        discord & \
+    else \
+        echo "✗ Discord not installed"; \
+        echo "Run: just discord"; \
+    fi
+
+# Check Discord status
+discord-status:
+    @echo "=== Discord Status ==="
+    @if pacman -Qs "^discord " > /dev/null 2>&1; then \
+        echo "✓ Discord installed"; \
+        pacman -Qi discord | grep "Version" | sed 's/^/  /'; \
+    else \
+        echo "✗ Discord not installed"; \
+        echo "Run: just discord"; \
+    fi
 
 # Install and configure Mesh (MeshCentral Agent)
 mesh: mesh-prompt
@@ -1335,6 +1854,11 @@ verify:
     @if [ -d "$$HOME/.steam/steam/steamapps/common/SteamVR" ]; then echo "  ✓ SteamVR installed"; else echo "  ✗ SteamVR missing (install from Steam)"; fi
     @if pacman -Qs lib32-vulkan-icd-loader > /dev/null 2>&1; then echo "  ✓ VR libraries installed"; else echo "  ✗ VR libraries missing"; fi
     @echo ""
+    @echo "Quest 3 Setup (Sideloading):"
+    @if command -v adb > /dev/null; then echo "  ✓ ADB installed"; else echo "  ✗ ADB missing (run: just quest-setup)"; fi
+    @if groups | grep -q adbusers; then echo "  ✓ User in adbusers group"; else echo "  ✗ User not in adbusers group (run: just quest-setup)"; fi
+    @if [ -f /etc/udev/rules.d/51-quest.rules ]; then echo "  ✓ Quest udev rules configured"; else echo "  ✗ Quest udev rules missing (run: just quest-setup)"; fi
+    @echo ""
     @echo "Scanning:"
     @if command -v scanimage > /dev/null; then echo "  ✓ SANE backend installed"; else echo "  ✗ SANE missing"; fi
     @if command -v skanlite > /dev/null; then echo "  ✓ Skanlite installed"; else echo "  ✗ Skanlite missing (run: just scanning)"; fi
@@ -1368,6 +1892,7 @@ verify:
     @if command -v lifecycle-mcp > /dev/null; then echo "  ✓ Lifecycle MCP installed"; else echo "  ✗ Lifecycle MCP missing (run: just dev-lifecycle-mcp)"; fi
     @if command -v python > /dev/null; then echo "  ✓ Python installed"; python --version | sed 's/^/    /'; else echo "  ✗ Python missing"; fi
     @if command -v uv > /dev/null; then echo "  ✓ uv installed"; uv --version | sed 's/^/    /'; else echo "  ✗ uv missing (recommended for Python)"; fi
+    @if command -v dotnet > /dev/null; then echo "  ✓ .NET SDK installed"; dotnet --version | sed 's/^/    /'; else echo "  ✗ .NET SDK missing (run: just dev-dotnet)"; fi
     @echo ""
     @echo "VPN:"
     @if command -v nordvpn > /dev/null; then echo "  ✓ NordVPN installed"; nordvpn --version | sed 's/^/    /'; else echo "  ✗ NordVPN missing (run: just nordvpn)"; fi
