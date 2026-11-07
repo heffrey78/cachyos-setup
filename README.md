@@ -16,7 +16,7 @@ This repository contains setup scripts and documentation for configuring a Cachy
 - **dGPU**: NVIDIA GeForce RTX 5070 (nvidia-open, driver 615.x)
 - **iGPU**: AMD Raphael (Radeon 610M)
 - **Bootloader**: Limine (kernel cmdline in `/etc/default/limine`, apply with `limine-update`)
-- **Disk**: single NVMe, btrfs + snapper (do **not** run `fix-disks.sh` here — it targets the laptop's `nvme1n1` layout)
+- **Disk**: single NVMe, btrfs + snapper (`fix-disks.sh` removed on this branch — it targets the laptop's `nvme1n1` layout)
 
 `just drivers` auto-detects Intel/AMD/Nvidia by PCI vendor ID, and the suspend recipes support both Limine and GRUB.
 
