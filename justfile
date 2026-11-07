@@ -30,8 +30,11 @@ check-system:
     @inxi -G
     @echo ""
 
-# Install and configure GPU drivers
-drivers: intel-drivers nvidia-check
+# Install and configure GPU drivers (auto-detects Intel / AMD / Nvidia)
+drivers:
+    @if lspci -nn | grep -E "VGA|3D|Display" | grep -q '\[8086:'; then just intel-drivers; fi
+    @if lspci -nn | grep -E "VGA|3D|Display" | grep -q '\[1002:'; then just amd-drivers; fi
+    @if lspci -nn | grep -E "VGA|3D|Display" | grep -q '\[10de:'; then just nvidia-drivers; fi
     @echo "✓ GPU drivers configured"
 
 # Install Intel GPU drivers and tools
@@ -39,6 +42,18 @@ intel-drivers:
     @echo "=== Installing Intel GPU Drivers ==="
     yay -S --needed --noconfirm intel-media-driver libva-intel-driver intel-gpu-tools
     @echo "✓ Intel drivers installed"
+
+# Install AMD GPU tools (Mesa/RADV/VA-API ship with mesa + vulkan-radeon)
+amd-drivers:
+    @echo "=== Installing AMD GPU Drivers & Tools ==="
+    yay -S --needed --noconfirm mesa vulkan-radeon lib32-vulkan-radeon amdgpu_top radeontop libva-utils vulkan-tools
+    @echo "✓ AMD drivers/tools installed"
+
+# Install Nvidia extras (VA-API via NVDEC) and verify driver
+nvidia-drivers: nvidia-check
+    @echo "=== Installing Nvidia Extras ==="
+    yay -S --needed --noconfirm libva-nvidia-driver lib32-nvidia-utils nvtop
+    @echo "✓ Nvidia extras installed"
 
 # Verify Nvidia drivers (already installed)
 nvidia-check:
@@ -85,30 +100,47 @@ suspend-services:
     sudo systemctl enable nvidia-resume.service
     @echo "✓ Services enabled"
 
-# Configure kernel parameters for suspend
+# Configure kernel parameters for suspend (checks live driver state; Limine or GRUB)
 suspend-kernel-params:
-    @echo "=== Checking Kernel Parameters ==="
-    @echo "Current GRUB config:"
-    @grep "GRUB_CMDLINE_LINUX_DEFAULT" /etc/default/grub || true
+    @echo "=== Checking Nvidia Suspend Configuration ==="
+    @echo "Bootloader: $(if [ -f /etc/default/limine ]; then echo Limine; elif [ -f /etc/default/grub ]; then echo GRUB; else echo unknown; fi)"
+    @echo "Kernel cmdline: $(cat /proc/cmdline)"
     @echo ""
-    @if grep -q "nvidia.NVreg_PreserveVideoMemoryAllocations=1" /etc/default/grub; then \
-        echo "✓ Nvidia suspend parameter already configured"; \
+    @val=$(awk -F': *' '/^PreserveVideoMemoryAllocations/ {print $2}' /proc/driver/nvidia/params 2>/dev/null); \
+    if [ -z "$val" ]; then \
+        echo "⚠ Nvidia driver not loaded; cannot check"; \
+    elif [ "$val" != "0" ]; then \
+        echo "✓ PreserveVideoMemoryAllocations=$val (enabled by driver, no kernel param needed)"; \
     else \
-        echo "⚠ Nvidia suspend parameter NOT configured"; \
+        echo "⚠ PreserveVideoMemoryAllocations is disabled"; \
         echo ""; \
         echo "To fix, run: just suspend-kernel-params-add"; \
     fi
 
-# Add Nvidia suspend kernel parameters (interactive)
+# Add Nvidia suspend kernel parameter (interactive; Limine or GRUB)
 suspend-kernel-params-add:
-    @echo "=== Adding Nvidia Suspend Parameters ==="
-    @echo "This will add 'nvidia.NVreg_PreserveVideoMemoryAllocations=1' to GRUB"
-    @echo ""
-    @read -p "Continue? [y/N] " confirm && [ "$$confirm" = "y" ] || exit 1
-    sudo sed -i.bak 's/GRUB_CMDLINE_LINUX_DEFAULT="\(.*\)"/GRUB_CMDLINE_LINUX_DEFAULT="\1 nvidia.NVreg_PreserveVideoMemoryAllocations=1"/' /etc/default/grub
-    sudo grub-mkconfig -o /boot/grub/grub.cfg
-    @echo "✓ Kernel parameters updated"
-    @echo "⚠ Reboot required!"
+    #!/usr/bin/env bash
+    set -euo pipefail
+    param="nvidia.NVreg_PreserveVideoMemoryAllocations=1"
+    echo "=== Adding Nvidia Suspend Parameter ==="
+    if [ -f /etc/default/limine ]; then
+        if grep -q "$param" /etc/default/limine; then echo "✓ Already in /etc/default/limine"; exit 0; fi
+        echo "This will append '$param' to /etc/default/limine and run limine-update"
+        read -p "Continue? [y/N] " confirm; [ "$confirm" = "y" ] || exit 1
+        sudo cp /etc/default/limine /etc/default/limine.bak
+        echo "KERNEL_CMDLINE[default]+=\" $param\"" | sudo tee -a /etc/default/limine > /dev/null
+        sudo limine-update
+    elif [ -f /etc/default/grub ]; then
+        if grep -q "$param" /etc/default/grub; then echo "✓ Already in /etc/default/grub"; exit 0; fi
+        echo "This will add '$param' to GRUB"
+        read -p "Continue? [y/N] " confirm; [ "$confirm" = "y" ] || exit 1
+        sudo sed -i.bak "s/GRUB_CMDLINE_LINUX_DEFAULT=\"\(.*\)\"/GRUB_CMDLINE_LINUX_DEFAULT=\"\1 $param\"/" /etc/default/grub
+        sudo grub-mkconfig -o /boot/grub/grub.cfg
+    else
+        echo "✗ No supported bootloader config found (/etc/default/limine or /etc/default/grub)"; exit 1
+    fi
+    echo "✓ Kernel parameters updated"
+    echo "⚠ Reboot required!"
 
 # Install gaming tools and libraries
 gaming: gaming-steam gaming-tools gaming-wine gaming-retroarch
@@ -170,7 +202,7 @@ gaming-retroarch:
     fi
     @echo "✓ RetroArch and cores installed"
     @echo ""
-    @echo "Installed cores: $$(ls /usr/lib/libretro/*.so 2>/dev/null | wc -l)"
+    @echo "Installed cores: $(ls /usr/lib/libretro/*.so 2>/dev/null | wc -l)"
     @echo ""
     @echo "Additional cores available:"
     @echo "  - Search: yay -Ss libretro"
@@ -184,11 +216,11 @@ gaming-esync:
     @echo "=== Configuring Esync ==="
     @echo "Esync improves Wine/Proton performance by using eventfd-based synchronization"
     @echo ""
-    @current=$$(ulimit -Hn); \
-    if [ "$$current" -ge 524288 ]; then \
-        echo "✓ File descriptor limit already sufficient: $$current"; \
+    @current=$(ulimit -Hn); \
+    if [ "$current" -ge 524288 ]; then \
+        echo "✓ File descriptor limit already sufficient: $current"; \
     else \
-        echo "Current hard limit: $$current"; \
+        echo "Current hard limit: $current"; \
         echo "Recommended: 524288"; \
         echo ""; \
         echo "Adding limits to /etc/security/limits.conf..."; \
@@ -208,10 +240,10 @@ gaming-esync-status:
     @echo "=== Esync Status ==="
     @echo ""
     @echo "Current limits:"
-    @echo "  Soft limit: $$(ulimit -Sn)"
-    @echo "  Hard limit: $$(ulimit -Hn)"
+    @echo "  Soft limit: $(ulimit -Sn)"
+    @echo "  Hard limit: $(ulimit -Hn)"
     @echo ""
-    @if [ "$$(ulimit -Hn)" -ge 524288 ]; then \
+    @if [ "$(ulimit -Hn)" -ge 524288 ]; then \
         echo "✓ Esync ready (limit >= 524288)"; \
     else \
         echo "✗ Esync may not work properly"; \
@@ -378,7 +410,7 @@ printing-add-canon:
     @echo "  2. Network - Printer on Wi-Fi/Ethernet"
     @echo ""
     @read -p "Enter choice [1-2]: " choice; \
-    case $$choice in \
+    case $choice in \
         1) just printing-add-canon-usb ;; \
         2) just printing-add-canon-network ;; \
         *) echo "Invalid choice" ;; \
@@ -445,8 +477,8 @@ printing-test:
     @lpstat -p -d 2>/dev/null || echo "No printers configured"
     @echo ""
     @read -p "Enter printer name: " printer; \
-    echo "Sending test page to $$printer..."; \
-    echo "This is a test print from CachyOS" | lp -d $$printer && echo "✓ Test page sent to printer"
+    echo "Sending test page to $printer..."; \
+    echo "This is a test print from CachyOS" | lp -d $printer && echo "✓ Test page sent to printer"
 
 # Install VR streaming tools for Quest 3
 vr: vr-libs vr-steamvr vr-alvr
@@ -542,7 +574,7 @@ vr-status:
     @echo "=== VR Setup Status ==="
     @echo ""
     @echo "SteamVR:"
-    @if [ -d "$$HOME/.steam/steam/steamapps/common/SteamVR" ]; then \
+    @if [ -d "$HOME/.steam/steam/steamapps/common/SteamVR" ]; then \
         echo "  ✓ SteamVR installed"; \
     else \
         echo "  ✗ SteamVR not found"; \
@@ -633,7 +665,7 @@ quest-udev:
         echo "✓ User already in adbusers group"; \
     else \
         echo "Adding user to adbusers group..."; \
-        sudo usermod -aG adbusers $$USER; \
+        sudo usermod -aG adbusers $USER; \
         echo "✓ User added to adbusers group"; \
         echo "⚠ Log out and back in for group to take effect"; \
     fi
@@ -658,7 +690,7 @@ quest-status:
     @echo "ADB Devices:"
     @adb devices
     @echo ""
-    @if adb devices | grep -q "device$$"; then \
+    @if adb devices | grep -q "device$"; then \
         echo "✓ Quest 3 connected and authorized"; \
         echo ""; \
         echo "Device info:"; \
@@ -680,7 +712,7 @@ quest-status:
 # Create Synth Riders folder structure on Quest
 quest-synth-init:
     @echo "=== Initializing Synth Riders Folders ==="
-    @if ! adb devices | grep -q "device$$"; then \
+    @if ! adb devices | grep -q "device$"; then \
         echo "✗ Quest 3 not connected"; \
         echo "Run: just quest-status"; \
         exit 1; \
@@ -695,7 +727,7 @@ quest-synth-init:
 # Transfer Synth Riders songs to Quest (usage: just quest-synth-push ~/Downloads/*.synth)
 quest-synth-push *files:
     @echo "=== Transferring Synth Riders Songs ==="
-    @if ! adb devices | grep -q "device$$"; then \
+    @if ! adb devices | grep -q "device$"; then \
         echo "✗ Quest 3 not connected"; \
         echo "Run: just quest-status"; \
         exit 1; \
@@ -705,21 +737,21 @@ quest-synth-push *files:
     @echo ""
     @count=0; \
     for file in {{files}}; do \
-        if [ -f "$$file" ]; then \
-            echo "Pushing: $$(basename $$file)"; \
-            adb push "$$file" /sdcard/SynthRidersUC/CustomSongs/; \
-            count=$$((count + 1)); \
+        if [ -f "$file" ]; then \
+            echo "Pushing: $(basename $file)"; \
+            adb push "$file" /sdcard/SynthRidersUC/CustomSongs/; \
+            count=$((count + 1)); \
         fi; \
     done; \
     echo ""; \
-    echo "✓ Transferred $$count song(s) to Quest 3"; \
+    echo "✓ Transferred $count song(s) to Quest 3"; \
     echo ""; \
     echo "Launch Synth Riders on Quest to see new songs"
 
 # Transfer Synth Riders playlists to Quest
 quest-synth-playlist *files:
     @echo "=== Transferring Synth Riders Playlists ==="
-    @if ! adb devices | grep -q "device$$"; then \
+    @if ! adb devices | grep -q "device$"; then \
         echo "✗ Quest 3 not connected"; \
         echo "Run: just quest-status"; \
         exit 1; \
@@ -729,27 +761,27 @@ quest-synth-playlist *files:
     @echo ""
     @count=0; \
     for file in {{files}}; do \
-        if [ -f "$$file" ]; then \
-            echo "Pushing: $$(basename $$file)"; \
-            adb push "$$file" /sdcard/SynthRidersUC/Playlist/; \
-            count=$$((count + 1)); \
+        if [ -f "$file" ]; then \
+            echo "Pushing: $(basename $file)"; \
+            adb push "$file" /sdcard/SynthRidersUC/Playlist/; \
+            count=$((count + 1)); \
         fi; \
     done; \
     echo ""; \
-    echo "✓ Transferred $$count playlist(s) to Quest 3"
+    echo "✓ Transferred $count playlist(s) to Quest 3"
 
 # List Synth Riders songs on Quest
 quest-synth-list:
     @echo "=== Synth Riders Songs on Quest ==="
-    @if ! adb devices | grep -q "device$$"; then \
+    @if ! adb devices | grep -q "device$"; then \
         echo "✗ Quest 3 not connected"; \
         exit 1; \
     fi
     @echo ""
-    @song_count=$$(adb shell ls /sdcard/SynthRidersUC/CustomSongs/ 2>/dev/null | wc -l); \
-    echo "Total songs: $$song_count"; \
+    @song_count=$(adb shell ls /sdcard/SynthRidersUC/CustomSongs/ 2>/dev/null | wc -l); \
+    echo "Total songs: $song_count"; \
     echo ""; \
-    if [ "$$song_count" -gt 0 ]; then \
+    if [ "$song_count" -gt 0 ]; then \
         echo "Recent songs (last 20):"; \
         adb shell ls -t /sdcard/SynthRidersUC/CustomSongs/ | head -20; \
     else \
@@ -759,27 +791,27 @@ quest-synth-list:
 # Backup Synth Riders content from Quest
 quest-synth-backup:
     @echo "=== Backing Up Synth Riders Content ==="
-    @if ! adb devices | grep -q "device$$"; then \
+    @if ! adb devices | grep -q "device$"; then \
         echo "✗ Quest 3 not connected"; \
         exit 1; \
     fi
-    @backup_dir=$$HOME/synth-riders-backup-$$(date +%Y%m%d_%H%M%S); \
-    echo "Creating backup directory: $$backup_dir"; \
-    mkdir -p "$$backup_dir"; \
+    @backup_dir=$HOME/synth-riders-backup-$(date +%Y%m%d_%H%M%S); \
+    echo "Creating backup directory: $backup_dir"; \
+    mkdir -p "$backup_dir"; \
     echo ""; \
     echo "Pulling SynthRidersUC folder..."; \
-    adb pull /sdcard/SynthRidersUC/ "$$backup_dir/"; \
+    adb pull /sdcard/SynthRidersUC/ "$backup_dir/"; \
     echo ""; \
-    echo "✓ Backup complete: $$backup_dir"
+    echo "✓ Backup complete: $backup_dir"
 
 # Clear Synth Riders song cache on Quest
 quest-synth-clear-cache:
     @echo "=== Clearing Synth Riders Cache ==="
-    @if ! adb devices | grep -q "device$$"; then \
+    @if ! adb devices | grep -q "device$"; then \
         echo "✗ Quest 3 not connected"; \
         exit 1; \
     fi
-    @read -p "This will delete the song database cache. Continue? [y/N] " confirm && [ "$$confirm" = "y" ] || exit 1
+    @read -p "This will delete the song database cache. Continue? [y/N] " confirm && [ "$confirm" = "y" ] || exit 1
     @echo "Deleting SynthDB..."
     @adb shell rm /sdcard/SynthRidersUC/SynthDB 2>/dev/null || echo "Cache already clear"
     @echo "✓ Cache cleared. Relaunch Synth Riders to rebuild database"
@@ -801,7 +833,7 @@ quest-sidequest:
 # Grant storage permissions to Quest apps (needed for Android 12+)
 quest-grant-storage appid:
     @echo "=== Granting Storage Permissions ==="
-    @if ! adb devices | grep -q "device$$"; then \
+    @if ! adb devices | grep -q "device$"; then \
         echo "✗ Quest 3 not connected"; \
         exit 1; \
     fi
@@ -849,11 +881,11 @@ dev-git:
     git config --global user.email "heffrey78@gmail.com"
     @echo "Setting git user name..."
     @if git config --global user.name > /dev/null 2>&1; then \
-        echo "✓ Git user name already set to: $$(git config --global user.name)"; \
+        echo "✓ Git user name already set to: $(git config --global user.name)"; \
     else \
         read -p "Enter your full name for git commits: " name; \
-        git config --global user.name "$$name"; \
-        echo "✓ Git user name set to: $$name"; \
+        git config --global user.name "$name"; \
+        echo "✓ Git user name set to: $name"; \
     fi
     @echo ""
     @echo "Setting default branch name to 'main'..."
@@ -898,7 +930,7 @@ dev-docker:
         echo "✓ User already in docker group"; \
     else \
         echo "Adding user to docker group..."; \
-        sudo usermod -aG docker $$USER; \
+        sudo usermod -aG docker $USER; \
         echo "⚠ Log out and back in for docker group to take effect"; \
     fi
     @echo "✓ Docker installed"
@@ -1006,7 +1038,7 @@ dev-databases:
 # Install and configure nvm
 dev-nvm:
     @echo "=== Installing nvm ==="
-    @if [ -d "$$HOME/.nvm" ]; then \
+    @if [ -d "$HOME/.nvm" ]; then \
         echo "✓ nvm already installed"; \
     else \
         echo "Installing nvm..."; \
@@ -1028,16 +1060,16 @@ dev-nvm:
 # Install Node.js via nvm
 dev-node: dev-nvm
     @echo "=== Installing Node.js via nvm ==="
-    @bash -c "source $$HOME/.nvm/nvm.sh && nvm install --lts && nvm install node && nvm alias default lts/* && nvm use default"
+    @bash -c "source $HOME/.nvm/nvm.sh && nvm install --lts && nvm install node && nvm alias default lts/* && nvm use default"
     @echo "✓ Node.js installed"
     @echo ""
     @echo "Installed versions:"
-    @bash -c "source $$HOME/.nvm/nvm.sh && nvm list"
+    @bash -c "source $HOME/.nvm/nvm.sh && nvm list"
 
 # Install Claude CLI
 dev-claude: dev-node
     @echo "=== Installing Claude CLI ==="
-    @bash -c "source $$HOME/.nvm/nvm.sh && nvm use default && npm install -g @anthropic-ai/claude-code"
+    @bash -c "source $HOME/.nvm/nvm.sh && nvm use default && npm install -g @anthropic-ai/claude-code"
     @echo "✓ Claude CLI installed"
     @echo ""
     @echo "Run 'claude' to get started"
@@ -1135,15 +1167,15 @@ dev-dotnet-new:
     @echo ""
     @read -p "Enter template name (e.g., console, webapi): " template; \
     read -p "Enter project name: " name; \
-    if [ -n "$$name" ] && [ -n "$$template" ]; then \
+    if [ -n "$name" ] && [ -n "$template" ]; then \
         echo ""; \
-        echo "Creating $$template project: $$name"; \
-        dotnet new $$template -n $$name; \
+        echo "Creating $template project: $name"; \
+        dotnet new $template -n $name; \
         echo ""; \
-        echo "✓ Project created in ./$$name"; \
+        echo "✓ Project created in ./$name"; \
         echo ""; \
         echo "Next steps:"; \
-        echo "  cd $$name"; \
+        echo "  cd $name"; \
         echo "  dotnet run"; \
     else \
         echo "Project creation cancelled"; \
@@ -1213,7 +1245,7 @@ dev-dotnet-status:
     @echo "SDK:"
     @if command -v dotnet > /dev/null; then \
         echo "  ✓ .NET SDK installed"; \
-        echo "    Version: $$(dotnet --version)"; \
+        echo "    Version: $(dotnet --version)"; \
         echo ""; \
         echo "  Installed SDKs:"; \
         dotnet --list-sdks | sed 's/^/    /'; \
@@ -1280,7 +1312,7 @@ dev-antigravity-status:
     @echo "=== Antigravity Status ==="
     @if command -v antigravity > /dev/null 2>&1; then \
         echo "✓ Antigravity installed"; \
-        echo "  Location: $$(which antigravity)"; \
+        echo "  Location: $(which antigravity)"; \
         antigravity --version 2>/dev/null | sed 's/^/  /' || true; \
         pacman -Qi antigravity-bin 2>/dev/null | grep -E "^(Name|Version|Install Date):" | sed 's/^/  /'; \
     else \
@@ -1356,7 +1388,7 @@ dev-lifecycle-mcp-status:
     @echo ""
     @if command -v lifecycle-mcp > /dev/null; then \
         echo "✓ lifecycle-mcp installed"; \
-        echo "  Location: $$(which lifecycle-mcp)"; \
+        echo "  Location: $(which lifecycle-mcp)"; \
         echo ""; \
         if uv tool list 2>/dev/null | grep -q lifecycle-mcp; then \
             echo "  Installation method: uv tool"; \
@@ -1415,7 +1447,7 @@ nordvpn-setup:
         echo "✓ User already in nordvpn group"; \
     else \
         echo "Adding user to nordvpn group..."; \
-        sudo usermod -aG nordvpn $$USER; \
+        sudo usermod -aG nordvpn $USER; \
         echo "⚠ Log out and back in for nordvpn group to take effect"; \
     fi
     @echo "✓ NordVPN service configured"
@@ -1513,10 +1545,10 @@ mesh-prompt:
     @echo "  wget 'https://your-meshcentral-server/meshagents?id=XXXX' -O ./meshagent && chmod 755 ./meshagent && sudo ./meshagent -install"
     @echo ""
     @read -p "Do you have a MeshCentral server URL? [y/N] " confirm; \
-    if [ "$$confirm" = "y" ]; then \
+    if [ "$confirm" = "y" ]; then \
         read -p "Enter your MeshCentral installation URL: " mesh_url; \
-        if [ -n "$$mesh_url" ]; then \
-            just mesh-install "$$mesh_url"; \
+        if [ -n "$mesh_url" ]; then \
+            just mesh-install "$mesh_url"; \
         fi; \
     else \
         echo ""; \
@@ -1688,12 +1720,12 @@ hyprland-status:
     fi
     @echo ""
     @echo "Session:"
-    @if [ "$$XDG_CURRENT_DESKTOP" = "Hyprland" ]; then \
+    @if [ "$XDG_CURRENT_DESKTOP" = "Hyprland" ]; then \
         echo "  ✓ Currently running Hyprland"; \
-        echo "    Session type: $$XDG_SESSION_TYPE"; \
+        echo "    Session type: $XDG_SESSION_TYPE"; \
     else \
         echo "  ℹ Not currently in Hyprland session"; \
-        echo "    Current desktop: $$XDG_CURRENT_DESKTOP"; \
+        echo "    Current desktop: $XDG_CURRENT_DESKTOP"; \
         echo "    Log out and select Hyprland at login screen"; \
     fi
 
@@ -1701,7 +1733,7 @@ hyprland-status:
 hyprland-switch:
     @echo "=== Switch to Hyprland ==="
     @echo ""
-    @if [ "$$XDG_CURRENT_DESKTOP" = "Hyprland" ]; then \
+    @if [ "$XDG_CURRENT_DESKTOP" = "Hyprland" ]; then \
         echo "✓ Already running Hyprland!"; \
     else \
         echo "To switch to Hyprland:"; \
@@ -1723,12 +1755,12 @@ hyprland-switch:
 hyprland-uninstall:
     @echo "=== Uninstalling Hyprland ==="
     @echo ""
-    @read -p "Remove Hyprland and dependencies? [y/N] " confirm && [ "$$confirm" = "y" ] || exit 1
+    @read -p "Remove Hyprland and dependencies? [y/N] " confirm && [ "$confirm" = "y" ] || exit 1
     @echo "Removing Hyprland..."
     yay -Rns hyprland hyprpaper hyprlock hypridle waybar wofi dunst
     @echo ""
     @read -p "Remove config files? [y/N] " confirm; \
-    if [ "$$confirm" = "y" ]; then \
+    if [ "$confirm" = "y" ]; then \
         echo "Backing up config..."; \
         [ -d ~/.config/hypr ] && mv ~/.config/hypr ~/.config/hypr.backup.$(date +%Y%m%d_%H%M%S); \
         echo "✓ Config backed up"; \
@@ -1763,20 +1795,20 @@ oriedita-install:
 # Create desktop entry for Oriedita
 oriedita-desktop:
     @echo "=== Creating Desktop Entry ==="
-    @mkdir -p $$HOME/.local/share/applications
+    @mkdir -p $HOME/.local/share/applications
     @printf '%s\n' \
         '[Desktop Entry]' \
         'Name=Oriedita' \
         'Comment=Origami design software' \
-        'Exec='$$HOME'/.local/share/oriedita/bin/Oriedita' \
-        'Icon='$$HOME'/.local/share/oriedita/lib/Oriedita.png' \
+        'Exec='$HOME'/.local/share/oriedita/bin/Oriedita' \
+        'Icon='$HOME'/.local/share/oriedita/lib/Oriedita.png' \
         'Terminal=false' \
         'Type=Application' \
         'Categories=Graphics;Education;' \
         'MimeType=application/x-oriedita-cp;application/x-oriedita-ori;' \
-        > $$HOME/.local/share/applications/oriedita.desktop
-    @chmod +x $$HOME/.local/share/applications/oriedita.desktop
-    @update-desktop-database $$HOME/.local/share/applications 2>/dev/null || true
+        > $HOME/.local/share/applications/oriedita.desktop
+    @chmod +x $HOME/.local/share/applications/oriedita.desktop
+    @update-desktop-database $HOME/.local/share/applications 2>/dev/null || true
     @echo "✓ Desktop entry created"
 
 # Launch Oriedita
@@ -1810,7 +1842,7 @@ oriedita-status:
 oriedita-update:
     @echo "=== Updating Oriedita ==="
     @echo "Removing old version..."
-    @rm -rf $$HOME/.local/share/oriedita
+    @rm -rf $HOME/.local/share/oriedita
     @echo "Installing latest version..."
     @just oriedita-install
     @echo "✓ Oriedita updated"
@@ -1844,14 +1876,14 @@ verify:
     @if command -v gamemoded > /dev/null; then echo "  ✓ GameMode installed"; else echo "  ✗ GameMode missing"; fi
     @if command -v retroarch > /dev/null; then \
         echo "  ✓ RetroArch installed"; \
-        echo "    Cores: $$(ls /usr/lib/libretro/*.so 2>/dev/null | wc -l)"; \
+        echo "    Cores: $(ls /usr/lib/libretro/*.so 2>/dev/null | wc -l)"; \
     else \
         echo "  ✗ RetroArch missing (run: just gaming-retroarch)"; \
     fi
     @echo ""
     @echo "VR (Quest 3 Streaming):"
     @if command -v alvr_dashboard > /dev/null; then echo "  ✓ ALVR installed"; else echo "  ✗ ALVR missing (run: just vr)"; fi
-    @if [ -d "$$HOME/.steam/steam/steamapps/common/SteamVR" ]; then echo "  ✓ SteamVR installed"; else echo "  ✗ SteamVR missing (install from Steam)"; fi
+    @if [ -d "$HOME/.steam/steam/steamapps/common/SteamVR" ]; then echo "  ✓ SteamVR installed"; else echo "  ✗ SteamVR missing (install from Steam)"; fi
     @if pacman -Qs lib32-vulkan-icd-loader > /dev/null 2>&1; then echo "  ✓ VR libraries installed"; else echo "  ✗ VR libraries missing"; fi
     @echo ""
     @echo "Quest 3 Setup (Sideloading):"
@@ -1884,7 +1916,7 @@ verify:
     @if command -v docker > /dev/null; then echo "  ✓ Docker installed"; docker --version | sed 's/^/    /'; else echo "  ✗ Docker missing"; fi
     @if command -v code > /dev/null; then echo "  ✓ VS Code installed"; code --version | head -1 | sed 's/^/    /'; else echo "  ✗ VS Code missing (run: just dev-vscode)"; fi
     @if command -v gh > /dev/null; then echo "  ✓ GitHub CLI installed"; gh --version | head -1 | sed 's/^/    /'; else echo "  ✗ GitHub CLI missing (run: just dev-gh)"; fi
-    @if [ -d "$$HOME/.nvm" ]; then echo "  ✓ nvm installed"; else echo "  ✗ nvm missing"; fi
+    @if [ -d "$HOME/.nvm" ]; then echo "  ✓ nvm installed"; else echo "  ✗ nvm missing"; fi
     @if command -v node > /dev/null; then echo "  ✓ Node.js installed"; node --version | sed 's/^/    /'; else echo "  ✗ Node.js missing (run: just dev-node)"; fi
     @if command -v npm > /dev/null; then echo "  ✓ npm installed"; npm --version | sed 's/^/    /'; else echo "  ✗ npm missing"; fi
     @if command -v claude > /dev/null; then echo "  ✓ Claude CLI installed"; else echo "  ✗ Claude CLI missing (run: just dev-claude)"; fi
@@ -1936,6 +1968,15 @@ gpu-monitor-intel:
         echo "Install with: just intel-drivers"; \
     fi
 
+# Monitor AMD GPU
+gpu-monitor-amd:
+    @if command -v amdgpu_top > /dev/null; then \
+        amdgpu_top; \
+    else \
+        echo "amdgpu_top not installed"; \
+        echo "Install with: just amd-drivers"; \
+    fi
+
 # Test video acceleration
 test-vaapi:
     @echo "=== Video Acceleration Support ==="
@@ -1943,7 +1984,7 @@ test-vaapi:
         vainfo; \
     else \
         echo "vainfo not installed"; \
-        echo "Install with: just intel-drivers"; \
+        echo "Install with: just drivers"; \
     fi
 
 # Test Vulkan
@@ -2059,14 +2100,14 @@ clean:
 # Remove orphaned packages (unused dependencies)
 orphans:
     @echo "=== Checking for Orphaned Packages ==="
-    @orphans=$$(pacman -Qtdq 2>/dev/null); \
-    if [ -n "$$orphans" ]; then \
+    @orphans=$(pacman -Qtdq 2>/dev/null); \
+    if [ -n "$orphans" ]; then \
         echo "Found orphaned packages:"; \
-        echo "$$orphans"; \
+        echo "$orphans"; \
         echo ""; \
         read -p "Remove these packages? [y/N] " confirm; \
-        if [ "$$confirm" = "y" ]; then \
-            sudo pacman -Rns $$orphans; \
+        if [ "$confirm" = "y" ]; then \
+            sudo pacman -Rns $orphans; \
             echo "✓ Orphaned packages removed"; \
         else \
             echo "Skipped"; \
@@ -2078,10 +2119,10 @@ orphans:
 # Check for .pacnew configuration files
 pacnew:
     @echo "=== Checking for .pacnew Files ==="
-    @pacnew_files=$$(sudo find /etc -name "*.pacnew" 2>/dev/null); \
-    if [ -n "$$pacnew_files" ]; then \
+    @pacnew_files=$(sudo find /etc -name "*.pacnew" 2>/dev/null); \
+    if [ -n "$pacnew_files" ]; then \
         echo "Found .pacnew files that need attention:"; \
-        echo "$$pacnew_files"; \
+        echo "$pacnew_files"; \
         echo ""; \
         echo "Use 'sudo pacdiff' to merge these files"; \
         echo "Or manually compare with: diff -u /etc/file /etc/file.pacnew"; \
@@ -2092,8 +2133,8 @@ pacnew:
 # Check for failed systemd services
 failed-services:
     @echo "=== Failed Services ==="
-    @failed=$$(systemctl --failed --no-legend 2>/dev/null); \
-    if [ -n "$$failed" ]; then \
+    @failed=$(systemctl --failed --no-legend 2>/dev/null); \
+    if [ -n "$failed" ]; then \
         echo "Failed services found:"; \
         systemctl --failed; \
         echo ""; \
@@ -2111,9 +2152,9 @@ health:
     @just pacnew
     @echo ""
     @echo "Recent Errors (last hour):"
-    @errors=$$(journalctl -p 3 -S "1 hour ago" --no-pager 2>/dev/null | head -20); \
-    if [ -n "$$errors" ]; then \
-        echo "$$errors"; \
+    @errors=$(journalctl -p 3 -S "1 hour ago" --no-pager 2>/dev/null | head -20); \
+    if [ -n "$errors" ]; then \
+        echo "$errors"; \
         echo ""; \
         echo "(Showing first 20 entries, use 'journalctl -p 3 -xb' for full log)"; \
     else \

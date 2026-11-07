@@ -10,6 +10,16 @@ This repository contains setup scripts and documentation for configuring a Cachy
 - **Display**: Wayland + KWin compositor
 - **Pre-installed**: nvm, node, yay
 
+### ROG Desktop (`rog-desktop` branch)
+
+- **CPU**: AMD Ryzen 7 7800X3D
+- **dGPU**: NVIDIA GeForce RTX 5070 (nvidia-open, driver 615.x)
+- **iGPU**: AMD Raphael (Radeon 610M)
+- **Bootloader**: Limine (kernel cmdline in `/etc/default/limine`, apply with `limine-update`)
+- **Disk**: single NVMe, btrfs + snapper (do **not** run `fix-disks.sh` here — it targets the laptop's `nvme1n1` layout)
+
+`just drivers` auto-detects Intel/AMD/Nvidia by PCI vendor ID, and the suspend recipes support both Limine and GRUB.
+
 ## Quick Start
 
 ### Option 1: Using `just` (Recommended)
